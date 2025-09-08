@@ -32,7 +32,7 @@ tests = [
     {"name":"infinite loop", "src": SRC_LOOP, "func":"loop_forever", "args":[]},
 ]
 
-report = api.run_many(
+report = api.run_many( 
     tests,
     timeout_s=args.timeout,
     limits={"cpu_s":1, "as_bytes":256*1024*1024, "op_limit": 10000},
