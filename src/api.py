@@ -1,12 +1,7 @@
 import ast
-from multiprocessing import Value
+from multiprocessing import Process, Queue
+import time
 
-ALLOWLIST = (
-    # ternary addition / subtraction operators
-    # variable store and load and writes
-    # function defs, basic operations
-    # string, ints, etc.
-)
 
 SAFE_BUILTINS = {
     "abs": abs, "min": min, "max": max, "sum": sum,
@@ -22,11 +17,16 @@ BANLIST = (
     "exec",
     "open",
     "__builtins__",
+    # any dunder operation
+    # we need to ban imports do but we will do that in the validator
 )
 GLOBAL_MAX = 10_000
 CNT = 0
 
 class BanListError(Exception):
+    pass
+
+class AllowListError(Exception):
     pass
 
 class BanListValidator(ast.NodeVisitor):
@@ -41,110 +41,140 @@ class BanListValidator(ast.NodeVisitor):
         if isinstance(node.func, ast.Name):
             if node.func.id in BANLIST:
                 raise BanListError(f"{node.func.id} is not allowed")
+            elif "__" in node.func.id:
+                raise BanListError("No dunder methods allowed")
+        return self.generic_visit(node)
 
-        return self.generic_visit
+class AllowListValidator(ast.NodeVisitor):
+    pass
 
-    def 
+def _build_and_repair(tree: ast.Module):
+    ast.fix_missing_locations(tree)
+    tree.type_ignores = []
+    return tree
 
+class InstrumentLoops(ast.NodeTransformer):
+    """
+    class for instrumenting:
+        - functiondef
+        - while
+        - for
+    """
+    def __init__():
+        pass
 
-
-
-class OperationCounter(ast.NodeTransformer):
-    def __init__(self):
-        self.cnt = 0
-
-    def wrap_tick(self, node):
-        # wraps node with a tick wrapper
-        return ast.Subscript(
-            value = ast.Tuple(
-                elts = [
-                    ast.Call(func = ast.Name("_tick", ctx = ast.Load()), args = [], keywords=[]),
-                    node
-                ],
-                ctx = ast.Load()
-            ),
-            slice = ast.Constant(value = 1),
-            ctx = ast.Load()
+    def visit_For(self, node):
+        new_node = self.generic_visit(node)
+        expr = ast.Expr(
+            value = ast.Call(
+                func = ast.Name(id = "_tick_def", ctx = ast.Load()),
+                args = [],
+                keywords=[]
+            )
         )
-        
-    def visit_BinOp(self, node):
-        new_node =  self.generic_visit(node)
-        # since this is a subclass of nodeTransformer (write)
-        # we must return a node, ideally the one modified by generic visit
-        
-        return self.wrap_tick(new_node)
+        new_body = [expr] + new_node.body
+        new_node = ast.Module(body = new_body)
+        return new_node
 
-
+    def visit_FunctionDef(self, node):
+        new_node = self.generic_visit(node)
+        expr = ast.Expr(
+            value = ast.Call(
+                func = ast.Name(id = "_tick_def", ctx = ast.Load()),
+                args = [],
+                keywords=[]
+            )
+        )
+        new_body = [expr] + new_node.body
+        new_node = ast.Module(body = new_body)
+        return new_node
+    
+    def visit_While(self, node):
+        new_node = self.generic_visit(node)
+        expr = ast.Expr(
+            value = ast.Call(
+                func = ast.Name(id = "_tick_def", ctx = ast.Load()),
+                args = [],
+                keywords=[]
+            )
+        )
+        new_body = [expr] + new_node.body
+        new_node = ast.Module(body = new_body)
+        return new_node
 
 def validate_and_instrument(src: str, mode: str = "banlist", op_limit: int = 10000, instrument: bool = True) -> str:
     
     # first, just parse the code
+    try:
+        parsed = ast.parse(src)
+    except SyntaxError as e:
+        raise SyntaxError("The code you submitted is not parseable.")
 
-    parsed = ast.parse(src)
+    # validate
+    if mode == "banlist":
+        banlist = BanListValidator()
+        banlist.visit(parsed)
+    elif mode == "allowlist":
+        allowlist = AllowListValidator()
+        allowlist.visit(parsed)
+    else:
+        raise ValueError(f"We must have a mode to validate the code. {mode} is invalid.")
 
     # now, we need to instrument it 
+    instrument = InstrumentLoops()
+    new_tree = _build_and_repair(instrument.visit(parsed))
+    return ast.unparse(new_tree)
 
-    # to do this, we can use the tuple pattern: (_tick, func)[1] will let us execute tick + run and return the same function
+def _exec_child(src, ns, timeout, limits):
+    ## need to pass this as src since ast trees are not pickle-able
+    ## just runs executed code in a child container
+    ## ns will be both locals and global
 
-    # nodetransformer also lets us instrument any op: ie visit_BinOp will be run on all +/*/- operation
-    
+    p = Process(target=src)
+    p.start()
+    p.join(timeout=timeout)
+    if p.is_alive():
+        p.kill()
     pass
 
-
-def run_one(src: str, entry_func: str, args: tuple, timeout_s=1.0, limits=None) -> dict:
-
-    # parse the src code
-    try:
-        parsed_tree = ast.parse(src)
-    except SyntaxError as e:
-        return {"result": None, "status": f"syntax error: {e}"}
+# no one will call run one so we will
+def run_one(src: str, entry_func: str, args: tuple, timeout_s=1.0, limits=None, op_limit=10_000) -> dict:
 
     # add a function call to entry_func
+    parsed = ast.parse(src)
 
     final = ast.Assign(
         targets = [
             ast.Name(id="result", ctx = ast.Store())
         ],
         value = ast.Call(
-            # this needs to be a named reference to the variable 
-            # that is loaded from the string contained in entry func
             func = ast.Name(id = entry_func, ctx = ast.Load()),
-            # this needs to be a list ie ast.Constant
-            # but we don't know if it is a constant a priori...
-            # hmmm
             args = [ast.Constant(value = arg) for arg in args],
             keywords = [],
         )
     )
 
     # we need to execute both together
-    # parsed_tree is a generic module so we need to use a new module
-    new_body = parsed_tree.body + [final]
-    new_tree = ast.Module(new_body)
-
-    # instrument is for cpu_s, as_bytes, and op_count
-    state = {}
-
-    if limits:
-        # limits is a dict with cpu_s, as_bytes, and op_limit
-        op_lim = limits.get("op_limit")
-        if op_lim:
-            CNT = 0
-            def _tick():
-                nonlocal CNT
-                CNT += 1
-                if CNT >= op_lim:
-                    raise ValueError
-            counter = OperationCounter()
-            new_tree = counter.visit(new_tree)
-            state["_tick"] = _tick
-
-
-    ast.fix_missing_locations(new_tree)
-    new_tree.type_ignores = []
-    # build a state with everything we need
-
-    exec(compile(new_tree, "<ast>", "exec"), state)
+    new_body = parsed.body + [final]
+    new_tree = _build_and_repair(ast.Module(new_body))
+    # just assume there is an op_limit for now, and give it access to a def
+    cnt = 0
+    def _tick_def():
+        nonlocal cnt
+        cnt += 1
+        if cnt > op_limit:
+            raise ValueError
+    # process
+    # is this a thread? we probably want to spawn not fork
+    # i think threading uses forks and multprocesses uses spawn?
+    # so spawn would be from fresh, lets use that
+    # process. join = timeout
+    state = {
+        "_tick_def": _tick_def,
+        "__builtins__": SAFE_BUILTINS,
+    }
+    
+    res = _exec_child(ast.unparse(new_tree), state, timeout_s, limits)
     # return back the function state with the result
     # what do we return? we dont know what variable the code is writing too.
     return {
@@ -153,4 +183,21 @@ def run_one(src: str, entry_func: str, args: tuple, timeout_s=1.0, limits=None) 
     }
 
 def run_many(testcases: list[dict], timeout_s=1.0, limits=None, mode="banlist", op_limit=10000, instrument=True) -> dict:
-    pass
+    if op_limit or instrument:
+        do_instrumentation = True
+    else:
+        do_instrumentation = False
+    
+    op_limit_real = max(op_limit, limits.get(op_limit, 0))
+    results = []
+    for case in testcases:
+        try:
+            instrumented = validate_and_instrument(case["code"], mode, op_limit, do_instrumentation)
+            results.append(run_one(instrumented, case["func"], case["args"], timeout_s, limits, op_limit_real))
+        except Exception as e:
+            res = {
+                "status": e,
+                "result": None,
+            }
+            results.append(res)
+    return {"results": results}
