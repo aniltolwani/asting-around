@@ -1,0 +1,15 @@
+[project]
+name = "asting-around"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "ipywidgets>=8.1.7",
+    "jupyter>=1.1.1",
+    "jupyterlab>=4.4.7",
+    "matplotlib>=3.10.6",
+    "notebook>=7.4.5",
+    "numpy>=2.3.2",
+    "pandas>=2.3.2",
+]

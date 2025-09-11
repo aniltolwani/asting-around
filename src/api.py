@@ -1,6 +1,6 @@
 import ast
 from multiprocessing import Process, Queue
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import time
 
 
@@ -261,6 +261,8 @@ def _tick_def():
     if p.is_alive():
         print("Process timed out, killing...")
         p.kill()
+        # need to join to wait for it to die aswell? i guess join lets you wait in both cases
+        p.join()
         return {
             "result": None,
             "status": "TIMEOUT",
@@ -280,25 +282,33 @@ def run_many(testcases: list[dict], timeout_s=1.0, limits=None, mode="banlist", 
         op_limit_real = max(op_limit, limits["op_limit"])
     else:
         op_limit_real = op_limit
-    results = []
-    for i, case in enumerate(testcases):
-        try:
-            instrumented = validate_and_instrument(case["src"], mode, op_limit, do_instrumentation)
-            res = run_one(
-                    instrumented, 
-                    case.get("func", ""), 
-                    case.get("args", []), 
-                    timeout_s, 
-                    limits, 
-                    op_limit_real
-                )
-            results.append({"result": res})
-        except Exception as e:
-            res = {
-                "result":{
-                    "status": str(e),
-                    "result": None,
+    results = [{}] * len(testcases)
+    fut_to_index = {}
+    with ProcessPoolExecutor(max_workers = 4) as pool:
+        for i, case in enumerate(testcases):
+            try:
+                # do the instrumentation in one worker, probably not worth it 
+                instrumented = validate_and_instrument(case["src"], mode, op_limit, do_instrumentation)
+                fut = pool.submit(run_one,(
+                        instrumented, 
+                        case.get("func", ""), 
+                        case.get("args", []), 
+                        timeout_s, 
+                        limits, 
+                        op_limit_real
+                    ))
+                fut_to_index[fut] = i
+            except Exception as e:
+                # hm.... we need to think about this. if it happens on the parent worker how do we know what index it belongs to?
+                res = {
+                    "result":{
+                        "status": str(e),
+                        "result": None,
+                    }
                 }
-            }
-            results.append(res)
+                results.append(res)
+        # now iterate through the ones that are finished.
+        for fut in as_completed(fut_to_index.keys()):
+            idx = fut_to_index[fut]
+            results[idx] = {"result": fut.result()}
     return {"results": results}

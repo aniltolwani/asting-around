@@ -32,6 +32,7 @@ tests = [
     {"name":"infinite loop", "src": SRC_LOOP, "func":"loop_forever", "args":[]},
 ]
 
+print("hi")
 report = api.run_many( 
     tests,
     timeout_s=args.timeout,
@@ -42,12 +43,15 @@ report = api.run_many(
 )
 print(json.dumps(report, indent=2))
 
-print("\\nAdversarial smoke:")
+print("\\n=== Adversarial Smoke Tests ===")
 for name, code in SNIPPETS.items():
+    print(f"Testing adversarial snippet: {name}")
     res = api.run_many([{"name": name, "src": code, "func":"", "args":[]}],
                        timeout_s=args.timeout,
                        limits={"cpu_s":1, "as_bytes":128*1024*1024, "op_limit": 10000},
                        mode=args.mode,
                        op_limit=5000,
                        instrument=not args.no_instrument)
-    print(name, res["results"][0]["result"]["status"])
+    status = res["results"][0]["result"]["status"]
+    print(f"  {name}: {status}")
+print("\\n=== All tests completed ===")
